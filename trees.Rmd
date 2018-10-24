@@ -1,0 +1,374 @@
+---
+title: "trees"
+author: "Alistair Johnson"
+date: "October 23, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+install.packages("mlbench")
+install.packages("e1071")
+install.packages("xgboost")
+install.packages("fastAdaboost")
+install.packages("caret")
+install.packages("rpart")
+install.packages("rpart.plot")
+install.packages("adabag")
+install.packages("randomForest")
+install.packages("gbm")
+install.packages("ROCR")
+install.packages("RCurl")
+library(rpart)
+library(rpart.plot)
+library(adabag)
+library(randomForest)
+library(MASS)
+library(gbm)
+library(ROCR)
+library(RCurl)
+```
+
+Many thanks to Brian Healy for the script which eventually became this R Markdown!
+
+# Dataset
+
+The dataset we'll use is a classic: Fisher's iris. This data was collected by Edgar Anderson and was used by Fisher to demonstrate Linear Discriminant Analysis (LDA). We won't talk about LDA in this tutorial but it's an interesting technique worth learning about!
+
+The iris dataset includes the petal and sepal measurements for three types of flowers. The below code:
+
+* loads in the dataset
+* prints out a brief description
+* extracts two columns of the data into `X` 
+* extracts the class labels into `y`
+
+Note that we only use two columns of data because we'd like to visualize the classifier. Also, we only use data from index `50` onward because we'd like to focus on two plants: versicolour and virginica. The data for these plants are not linearly separable (i.e. you cannot draw a straight line through the data to split the two plants into groups).
+
+```{r iris}
+# Creating small dataset with only two species and two predictors
+practice <- iris[iris$Species!="setosa",names(iris) %in% c("Petal.Length","Sepal.Length","Species")]
+practice$Species<-factor(practice$Species)
+head(practice)
+```
+
+We use `head` to look at the top 5 rows - and can see we have a variety of sepal length and petal length measurements for versicolor.
+
+## Decision tree
+
+Let's build the simplest tree model we can think of: a classification tree with only one split. Decision trees of this form are commonly referred to under the umbrella term Classification and Regression Trees (CART) [1]. While we will only be looking at classification here, regression isn't too different. After grouping the data (which is essentially what a decision tree does), classification involves assigning all members of the group to the majority class of that group during training. Regression is the same, except you would assign the average value, not the majority. In the case of a decision tree with one split, often called a "stump", the model will partition the data into two groups, and assign classes for those two groups based on majority vote. There are many parameters available for the DecisionTreeClassifier class; by specifying max_depth=1 we will build a decision tree with only one split - i.e. of depth 1.
+
+[1] L. Breiman, J. Friedman, R. Olshen, and C. Stone. Classification and Regression Trees. Wadsworth, Belmont, CA, 1984.
+
+```{r dt, echo=FALSE}
+# Fitting decision tree with only one split
+iris.dt<-rpart(Species~Sepal.Length+Petal.Length, data=practice, method="class",
+            control=rpart.control(maxdepth=1))
+```
+
+Since our model is so simple, we can actually look at the full decision tree.
+
+```{r dtplot, echo=FALSE}
+# Plotting the tree
+plot(iris.dt, uniform=TRUE, main="Classification Iris dataset")
+text(iris.dt, use.n=TRUE, all=TRUE, cex=.8)
+prp(iris.dt, faclen = 0, cex = 0.8, extra = 1)
+practice$pointcolor<-ifelse(practice$Species=="versicolor","orange","blue")
+
+# print the tree
+print(iris.dt)
+```
+
+Here we see three nodes: one at the top, one in the lower left, and one in the lower right. It's easier to read this from the print out however.
+
+The top node (#1) is the root of the tree: it contains all the data. Next to "root", the number "100" reminds us how many rows of data are assessed at this node, the next number "50" tells us how many misclassifications there are, and the string tells us the majority class "versicolor". In brackets we can see this node contains a 50:50 class balance (0.5, 0.5). In our iris data, that translates to 50 versicolour and 50 virginica.
+
+In this tree we've moved observations with petal length < 4.75 cm to the bottom left node (2), and  all observations with petal length >= 4.75 cm are moved into the bottom right node (3). Looking in the two nodes, we can also see that the class balance in brackets is much better for both, indicating that these nodes are more homogeneous. Looking at the value line, we can see that the left node has 44 observations in class 1, and 1 observation in class 2. This is much better than the 50/50 split we had earlier!
+
+Let's take a look at what this decision boundary actually looks like.
+
+```{r, echo=FALSE}
+##Plotting the actual data (circles) and model prediction (x)
+practice$pred.dt<-predict(iris.dt,practice,type="class")
+practice$pointcolor.dt<-ifelse(practice$pred.dt=="versicolor","orange","blue")
+plot(x=practice$Sepal.Length,y=practice$Petal.Length,main="Decision tree",xlab="sepal length (cm)",
+     ylab="petal length (cm)",col=practice$pointcolor)
+lines(x=c(4.5, 8.0),y=c(4.75, 4.75))
+points(x=practice$Sepal.Length,y=practice$Petal.Length,col=practice$pointcolor.dt,pch=4)
+```
+
+We can see a blue circle with a red X on the far left - the 1 point we misclassified as class 2 which had petal length < 4.75cm.
+
+Of course we are using a very simple model - let's see what happens when we increase the depth to 5.
+
+```{r, echo=FALSE}
+##Fitting decision tree with many splits
+iris.dt2<-rpart(Species~Sepal.Length+Petal.Length,data=practice,method="class",
+            control=rpart.control(maxdepth=6,minsplit=1,cp=0))
+practice$pred.dt2<-predict(iris.dt2,practice,type="class")
+practice$pointcolor.dt2<-ifelse(practice$pred.dt2=="versicolor","orange","blue")
+plot(x=practice$Sepal.Length,y=practice$Petal.Length,main="Decision tree-v2",xlab="sepal length (cm)",
+     ylab="petal length (cm)",col=practice$pointcolor)
+points(x=practice$Sepal.Length,y=practice$Petal.Length,col=practice$pointcolor.dt2,pch=4)
+```
+Now our tree is more complicated - we can see a few vertical boundaries as well as the horizontal one from before. Some of these we may like - for example the movement of the boundary upward around septal length of ~6.7 cm. However, some appear unnatural; the vertical bar of classification done around a septal length of 6.1 cm, for example. Let's look at the tree itself.
+
+```{r, echo=FALSE}
+print(iris.dt2)
+```
+
+At the bottom, we see nodes (14) and beyond are the culprit.
+
+(7) 42 obs, 1 misclassification -> Split on Sepal length <  6.05
+(14) 5 obs, 1 misclassification -> Split on Sepal Length >= 5.95
+(28) 1 obs, 0 misclassification - finished!
+
+Having an entire rule based upon this one observation seems silly, but it's perfectly logical as at the moment the only objective the algorithm cares about is minimizing the class imbalance (Gini coefficient) - and we can see the class balance is better at node (28) then at nodes (14) and (7)!
+
+# Boosting
+
+The premise of boosting is the combination of many weak learners to form a single "strong" learner. In a nutshell, boosting involves building a models iteratively, and at each step we focus on the data we performed poorly on. In our context, we'll use decision trees, so the first step would be to build a tree using the data. Next, we'd look at the data that we misclassified, and re-weight the data so that we really wanted to classify those observations correctly, at a cost of maybe getting some of the other data wrong this time.
+
+<!--
+Let's see how this works in practice.
+
+Looking at the above, we can see that the first iteration builds the exact same simple decision tree as we had seen earlier. This makes sense - it's using the entire dataset with no special weighting.
+
+In the next iteration we can see the model shift - it misclassified five observations in class 1, and now these are the most important observations. Consequently, it picks the boundary that, while prioritizing correctly classifies these observations, still tries to best classify the rest of the data too. Now we have correctly classified all but one observation, the one on the far left middle of the graph. In iteration 3, the algorithm solely focuses on correctly classifying this one observation.
+
+One important point is that each tree is weighted by it's global error. In the figure above, it's obvious that we wouldn't want to weight Tree 3 equally to Tree 1, when Tree 1 is doing so much better overall. It turns out that weighting each tree by the inverse of its error is a pretty good way to do this.
+-->
+
+Let's take a look at the final decision surface.
+
+
+```{r, echo=FALSE}
+##Fitting boosting model
+set.seed(1)
+iris.boost<-boosting(Species~Sepal.Length+Petal.Length,data=practice)
+practice$pred.boost<-predict(iris.boost,practice)$class
+practice$pointcolor.boost<-ifelse(practice$pred.boost=="versicolor","orange","blue")
+plot(x=practice$Sepal.Length,y=practice$Petal.Length,main="Boosting",xlab="sepal length (cm)",
+     ylab="petal length (cm)",col=practice$pointcolor)
+points(x=practice$Sepal.Length,y=practice$Petal.Length,col=practice$pointcolor.boost,pch=4)
+```
+
+<!--
+And that's AdaBoost! There are a few tricks we have glossed over here - but you understand the general principle. Now we'll move on to a different approach.
+-->
+
+With boosting, we iteratively changed the dataset to have new trees focus on the "difficult" observations. The next approach we discuss is similar as it also involves using changed versions of our dataset to build new trees.
+
+
+```{r, echo=FALSE}
+##Fitting bagging model
+iris.bag<-randomForest(Species~Sepal.Length+Petal.Length,data=practice, mtry=2)
+practice$pred.bag<-predict(iris.bag,practice)
+practice$pointcolor.bag<-ifelse(practice$pred.bag=="versicolor","orange","blue")
+plot(x=practice$Sepal.Length,y=practice$Petal.Length,main="Bagging",xlab="sepal length (cm)",
+     ylab="petal length (cm)",col=practice$pointcolor)
+points(x=practice$Sepal.Length,y=practice$Petal.Length,col=practice$pointcolor.bag,pch=4)
+```
+
+# Bagging / Random Forest
+
+Bootstrap aggregation, or "Bagging", is another form of ensemble learning where we aim to build a single good model by combining many models together. With AdaBoost, we modified the data to focus on hard to classify observations. We can imagine this as a form of resampling the data for each new tree. For example, say we have three observations: A, B, and C, [A, B, C]. If we correctly classify observations [A, B], but incorrectly classify C, then AdaBoost involves building a new tree that focuses on C. Equivalently, we could say AdaBoost builds a new tree using the dataset [A, B, C, C, C], where we have intentionally repeated observation C 3 times so that the algorithm thinks it is 3 times as important as the other observations. Before we move on, convince yourself that this makes sense.
+
+Bagging involves the exact same approach, except we don't selectively choose which observations to focus on, but rather we randomly select subsets of data each time. As you can see, while this is a similar process to AdaBoost, the concept is quite different. Whereas before we aimed to iteratively improve our overall model with new trees, we now build trees on what we hope are independent datasets.
+
+Let's take a step back, and think about a practical example. Say we wanted a good model of heart disease. If we saw researchers build a model from a dataset of patients from their hospital, we would be happy. If they then acquired a new dataset from new patients, and built a new model, we'd be inclined to feel that the combination of the two models would be better than any one individually. This exact scenario is what bagging aims to replicate, except instead of actually going out and collecting new datasets, we instead use bootstraping to create new sets of data from our current dataset. If you are unfamiliar with bootstrapping, you can treat it as "magic" for now (and if you are familiar with the bootstrap, you already know it's magic).
+
+<!--
+Let's take a look at a simple bootstrap model with the iris dataset.
+
+We can see that each individual tree is quite variable - this is a result of using a random set of data to train the classifier.
+
+Not bad! Of course, since this is a simple dataset, we are not seeing that many dramatic changes between different models. Don't worry, we'll quantitatively evaluate them later.
+
+Next up, a minor addition creates one of the most popular models in machine learning.
+-->
+
+The Random Forest takes the previous ideas one step further: instead of just resampling our data, we also select only a fraction of the features to include. It turns out that this subselection tends to improve the performance of our models. The odds of an individual being very good or very bad is higher (i.e. the variance of the trees is increased), and this ends up giving us a final model with better overall performance (lower bias).
+
+Let's train the model now.
+
+```{r, echo=FALSE}
+##Fitting random forest model
+iris.rf<-randomForest(Species~Sepal.Length+Petal.Length,data=practice)
+practice$pred.rf<-predict(iris.rf,practice)
+practice$pointcolor.rf<-ifelse(practice$pred.rf=="versicolor","orange","blue")
+plot(x=practice$Sepal.Length,y=practice$Petal.Length,main="Random forest",xlab="sepal length (cm)",
+     ylab="petal length (cm)",col=practice$pointcolor)
+points(x=practice$Sepal.Length,y=practice$Petal.Length,col=practice$pointcolor.rf,pch=4)
+```
+
+The visualization doesn't really show us the power of Random Forests, but we'll quantitatively evaluate them soon enough.
+
+
+# Running through a slightly harder dataset
+
+We've now learned the basics of the various tree methods and have visualized most of them on the Fisher iris data. We now move on to a harder classification problem involving the identification of breast cancer tumours from features describing cell nuclei of breast mass. The goal is to classify whether the mass is cancerous or not.
+
+```{r, echo=FALSE}
+fn <- getURL('https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data', ssl.verifyhost=FALSE, ssl.verifypeer=FALSE)
+
+# Wisconsin dataset
+wisc<-read.table(textConnection(fn), sep=",",header=F)
+names(wisc)<-c("ID","outcome",
+  "radius_mean","texture_mean","perimeter_mean","area_mean","smoothness_mean","compactness_mean",
+  "concavity_mean","concave_points_mean","symmetry_mean","fractal_dimension_mean",
+  "radius_se","texture_se","perimeter_se","area_se","smoothness_se","compactness_se",
+  "concavity_se","concave_points_se","symmetry_se","fractal_dimension_se",
+  "radius_worst","texture_worst","perimeter_worst","area_worst","smoothness_worst","compactness_worst",
+  "concavity_worst","concave_points_worst","symmetry_worst","fractal_dimension_worst")
+```
+
+A great package is caret; which allows for easy cross-validation (saves train/val/test split headache) and optimization of hyperparameters.
+
+```{r, echo=TRUE}
+library(mlbench)
+library(caret)
+```
+
+The following trains a tree, AdaBoost, RF, and gradient boosting model on the entire dataset.
+
+```{r, echo=FALSE}
+set.seed(1123)
+
+# prepare training scheme
+control <- trainControl(method="repeatedcv", number=5, repeats=3, classProbs = TRUE, summaryFunction = twoClassSummary)
+# train the tree model
+modelTree <- train(outcome~., data=wisc, method="rpart", metric="ROC", trControl=control)
+# train adaboost
+modelAdaboost <- train(outcome~., data=wisc, method="adaboost", metric="ROC", trControl=control)
+# train the RF model
+modelRF <- train(outcome~., data=wisc, method="rf", metric="ROC", trControl=control)
+# train the GBM model (with xgboost)
+modelGbm <- train(outcome~., data=wisc, method="xgbTree", metric="ROC", trControl=control, verbose=FALSE)
+
+# summarize the distributions
+summary(results)
+# boxplots of results
+bwplot(results)
+# dot plots of results
+dotplot(results)
+```
+
+
+GBM is working quite well!
+
+# Exercise
+
+We'll now practice using these models on a dataset acquired from patients admitted to intensive care units at the Beth Israel Deaconness Medical Center in Boston, MA. All patients in the cohort stayed for at least 48 hours, and the goal of the prediction task is to predict in-hospital mortality. This data is a subset of a publicly accessible ICU database: MIMIC. If you're interested, you can read more about MIMIC here. The particular dataset we are using is described in more detail here: http://physionet.org/challenge/2012/
+
+The data is originally provided as a time series of observations for a number of variables, but to simplify the analysis, we've done some preprocessing to get a single row for each patient. The following cell will download the data from online and load it into a dataframe
+
+```{r, echo=FALSE}
+fn = gzcon(url('https://github.com/alistairewj/tree-prediction-tutorial/raw/master/data/PhysionetChallenge2012-set-a.csv.gz', method="libcurl"), text=TRUE)
+seta <- read.table(fn, sep=',', header=TRUE)
+
+names(seta)[names(seta) == 'In.hospital_death'] <- 'death'
+
+rownames(seta) <- seta$recordid
+head(seta)
+```
+
+The first columns are:
+
+* recordid - random ID for each patient
+* SAPS.I - A severity of illness score (higher means sicker)
+* SOFA - An organ failure score (higher means sicker)
+* Length_of_stay - how long they stayed in the ICU
+* Survival - if they survived, this is -1. If they died, it's the number of days until their death
+* In.hospital_death - 0/1 if they died in hospital (this is our target)
+
+If we use length of stay/survival in our models, we are cheating! We don't know them until much later in the patient stay - and much later than our ideal time for prediction.
+
+We also don't want recordid since it has no physical meaning.
+
+```{r}
+# drop columns we don't want
+drop_columns <- c("Survival", "Length_of_stay", "recordid")
+seta <- seta[, !(names(seta) %in% drop_columns)]
+head(seta)
+```
+
+Much better! Now to try some models.
+
+```{r, echo=FALSE}
+set.seed(1123)
+# prepare training scheme
+control <- trainControl(method="repeatedcv", number=5, repeats=3, classProbs = TRUE, summaryFunction = twoClassSummary)
+# train the tree model
+modelTree <- train(death~., data=seta, method="rpart", metric="ROC", trControl=control)
+```
+
+Ah, it errors! Clearly our models cannot handle missing data. We haven't dealt with this before, but it is a challenging issue with medical data. In general there are three types of missing data:
+
+1. Missing completely at random (MCAR)
+  * The data is missing for reasons unrelated to the data
+  * a power outage results in losing vital sign data
+2. Missing at random (MAR)
+  * The data is missing for reasons related to the data, but not the missing observation
+  * we don't collect lactate measurements on admission to a medical ICU, but we collect them for cardiac ICU
+3. Missing not at random (MNAR)
+  * The data is missing, and the reason it is missing depends on the value
+  * a doctor does not order the Troponin-I lab test, because they believe it to be normal
+
+The hardest case to deal with is MNAR, and unfortunately, that is the most common in the medical domain. Still, we have to do something, so we often use approaches which are theoretically invalid under MNAR but in practice work acceptably well.
+
+Below, we'll replace missing data with the average value for the training population.
+
+```{r}
+for(i in 1:ncol(seta)){
+  seta[is.na(seta[,i]), i] <- mean(seta[,i], na.rm = TRUE)
+}
+
+seta$death <- factor(seta$death)
+levels(seta$death) <- c("alive", "dead")
+head(seta)
+```
+
+Now that the missing data is handled, we can try to build the above tree models using the ICU data!
+
+```{r, echo=FALSE}
+set.seed(1123)
+
+# prepare training scheme
+control <- trainControl(method="repeatedcv", number=5, repeats=3, classProbs = TRUE, summaryFunction = twoClassSummary)
+# train the tree model
+modelTree <- train(death~., data=seta, method="rpart", metric="ROC", trControl=control)
+# train adaboost
+modelAdaboost <- train(death~., data=seta, method="adaboost", metric="ROC", trControl=control)
+# train the RF model
+modelRF <- train(death~., data=seta, method="rf", metric="ROC", trControl=control)
+# train the GBM In.hospital_death (with xgboost)
+modelGbm <- train(death~., data=seta, method="xgbTree", metric="ROC", trControl=control, verbose=FALSE)
+
+# summarize the distributions
+summary(results)
+# boxplots of results
+bwplot(results)
+# dot plots of results
+dotplot(results)
+```
+
+# Challenge
+
+Now try to build your own model that performs well! Use cross-validation on set-a (4000 patients) to get a good model. Then apply that model on set-b (a distinct set of 4000 patients).
+The below code loads in set-b. Note that the outcome isn't available for set-b :)
+
+Some things to think about:
+
+* Are there other ways to impute missing data?
+* Have we thought about the features in our data, and how we are using them?
+* Have we visualized the data? Are there any obvious outliers which may fool our model? (note: a lot were removed by custom preprocessing I did, but some may remain)
+* Are there parameters of our model which we could change?
+
+```{r, echo=FALSE}
+fn = gzcon(url('https://github.com/alistairewj/tree-prediction-tutorial/raw/master/data/PhysionetChallenge2012-set-b-no-outcome.csv.gz', method="libcurl"), text=TRUE)
+setb <- read.table(fn, sep=',', header=TRUE)
+
+rownames(setb) <- setb$recordid
+drop_columns <- c("recordid")
+setb <- setb[, !(names(setb) %in% drop_columns)]
+head(setb)
+```
