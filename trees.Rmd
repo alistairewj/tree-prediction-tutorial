@@ -245,7 +245,7 @@ modelRF <- train(outcome~., data=wisc, method="rf", metric="ROC", trControl=cont
 modelGbm <- train(outcome~., data=wisc, method="xgbTree", metric="ROC", trControl=control, verbose=FALSE)
 
 # store results in a single object using resamples
-results <- resamples(list(tree=modelLvq, adaboost=modelAdaboost, RF=modelRF, GBM=modelGbm))
+results <- resamples(list(tree=modelTree, adaboost=modelAdaboost, RF=modelRF, GBM=modelGbm))
 
 # summarize the distributions
 summary(results)
